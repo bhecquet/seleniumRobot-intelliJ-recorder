@@ -1,0 +1,27 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>io.github.bhecquet.seleniumRobot.recorder</id>
+    <name>SeleniumRobot recorder</name>
+    <vendor>Covea</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <resource-bundle>messages.Recorder</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+
+    </extensions>
+
+    <actions>
+        <action id="io.github.bhecquet.seleniumRobot.recorder.actions.StartServerAction"
+                class="io.github.bhecquet.seleniumRobot.recorder.actions.StartServerAction" text="Start Selenium record"
+                description="Start Selenium recording into current class">
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+        </action>
+        <action id="io.github.bhecquet.seleniumRobot.recorder.actions.StopServerAction"
+                class="io.github.bhecquet.seleniumRobot.recorder.actions.StopServerAction" text="Stop Selenium record"
+                description="Stop Selenium recording">
+            <add-to-group group-id="ToolsMenu" anchor="after" relative-to-action="io.github.bhecquet.seleniumRobot.recorder.actions.StartServerAction"/>
+        </action>
+    </actions>
+</idea-plugin>
