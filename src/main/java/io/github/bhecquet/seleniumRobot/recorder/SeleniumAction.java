@@ -68,7 +68,7 @@ public class SeleniumAction {
                 break;
             case "sendKeys":
                 action = command;
-                formattedValue = "Keys." + value.replace("${KEY_", "").replace("}","");
+                formattedValue = "Keys." + value.replace("${KEY_", "").replace("}", "");
                 break;
             case "clickAt": // value is of the form "x,y"
                 action = command;
@@ -84,7 +84,7 @@ public class SeleniumAction {
                 action = command + "unknown";
         }
 
-        return String.format("\t\t%s.%s(%s);\n", getElementName(), action, formattedValue == null ? "": formattedValue);
+        return String.format("\t\t%s.%s(%s);\n", getElementName(), action, formattedValue == null ? "" : formattedValue);
 
     }
 
@@ -105,13 +105,13 @@ public class SeleniumAction {
                 elementType,
                 getSelector());
 
-       return code;
+        return code;
     }
 
     private String getSelector() {
         SeleniumTarget mainTarget = getTargets().get(0);
         String selector = null;
-        switch(mainTarget.getTargetType()) {
+        switch (mainTarget.getTargetType()) {
             case "id":
                 selector = String.format("By.id(\"%s\")", mainTarget.getTargetSelector().replace("id=", ""));
                 break;
@@ -173,6 +173,8 @@ public class SeleniumAction {
                 .replace("@", "")
                 .replace("'", "")
                 .replace("-", "_")
+                .replace(">", "_")
+                .replace("<", "_")
                 .replace(".", "")
                 .replace(" ", "_")
                 .replace("#", "");
@@ -181,7 +183,7 @@ public class SeleniumAction {
 
     private String getElementType() {
         if ("type".equals(command)
-            || "sendKeys".equals(command)) {
+                || "sendKeys".equals(command)) {
             return "TextFieldElement";
         } else if ("linkText".equals(getTargets().get(0).getTargetType())) {
             return "LinkElement";
@@ -191,7 +193,7 @@ public class SeleniumAction {
         } else if ("selectFrame".equals(command)) {
             return "FrameElement";
         } else if ("select".equals(command)
-        || "removeSelection".equals(command)) {
+                || "removeSelection".equals(command)) {
             return "SelectList";
         } else {
             return "HtmlElement";
