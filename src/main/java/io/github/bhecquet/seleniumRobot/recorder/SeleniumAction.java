@@ -10,6 +10,7 @@ import java.util.stream.Collectors;
 public class SeleniumAction {
     private String command;
     private String value;
+    private String tagName;
     private List<List<String>> targets;
     private List<FrameInfo> framePath;
 
@@ -20,6 +21,14 @@ public class SeleniumAction {
 
     public List<FrameInfo> getFramePath() {
         return framePath;
+    }
+
+    public String getTagName() {
+        return tagName;
+    }
+
+    public void setTagName(String tagName) {
+        this.tagName = tagName;
     }
 
     public String getCommand() {
@@ -75,7 +84,7 @@ public class SeleniumAction {
                 formattedValue = "";
                 break;
             case "contextmenu":
-                action = "contextMenuAction";
+                action = "rightClickMouse";
                 break;
 
             case "select":
@@ -187,7 +196,9 @@ public class SeleniumAction {
                 extractAriaLabelFromTargets(),
                 extractButtonTextFromTargets(),
                 extractLinkTextFromTargets(),
+                extractAdjacentTextFromTargets(),
                 extractPlaceholder(selector),
+                extractElementTextFromTargets(),
                 extractNameFromTargets(),
                 extractIdFromTargets(),
                 extractDataTestidFromTargets(),
@@ -197,7 +208,7 @@ public class SeleniumAction {
         String frameRef = "";
         if (framePath != null && !framePath.isEmpty()) {
             FrameInfo fr = framePath.get(framePath.size() - 1);
-            String frameVar = frameVarNameFrom(fr); // voir helper ci-dessous
+            String frameVar = frameVarNameFrom(fr);
             frameRef = ", " + frameVar;
         }
 
@@ -289,6 +300,10 @@ public class SeleniumAction {
                 return "ByC.attribute(\"data-testid\", \""
                         + escape(raw)
                         + "\")";
+            case "data-selenium-id":
+                return "ByC.attribute(\"data-selenium-id\", \""
+                        + escape(raw)
+                        + "\")";
             case "data-test":
                 return "ByC.attribute(\"data-test\", \""
                         + escape(raw)
@@ -327,7 +342,30 @@ public class SeleniumAction {
                 return "ByC.attribute(\"data-test-selector\", \""
                         + escape(raw)
                         + "\")";
+            case "uniqueElementText":
+                String uniqueText =
+                        cleanText(raw);
 
+                String textTagName =
+                        getTagName() == null
+                                ? ""
+                                : getTagName()
+                                .trim()
+                                .toLowerCase(Locale.ROOT);
+
+                if (
+                        uniqueText == null
+                                || uniqueText.isBlank()
+                                || textTagName.isBlank()
+                ) {
+                    return null;
+                }
+
+                return "ByC.text(\""
+                        + escape(uniqueText)
+                        + "\", \""
+                        + escape(textTagName)
+                        + "\")";
             case "formControlName":
             case "formcontrolname":
                 return "ByC.attribute(\"formcontrolname\", \""
@@ -413,9 +451,7 @@ public class SeleniumAction {
                     return null;
                 }
 
-                /*
-                 * Pour un texte court et stable, By.linkText est préférable.
-                 */
+
                 if (cleaned.length() <= 80 && !isBadNameSource(cleaned)) {
                     return "By.linkText(\""
                             + escape(cleaned)
@@ -506,8 +542,23 @@ public class SeleniumAction {
 
                 if (raw.startsWith("//div[") || raw.contains("/div[") || raw.length() > 120) {
 
-                    if (text != null && text.length() < 40) {
-                        return "ByC.text(\"" + escape(text) + "\")";
+                    String fallbackTagName =
+                            getTagName() == null
+                                    ? ""
+                                    : getTagName()
+                                    .trim()
+                                    .toLowerCase(Locale.ROOT);
+
+                    if (
+                            text != null
+                                    && text.length() < 40
+                                    && !fallbackTagName.isBlank()
+                    ) {
+                        return "ByC.text(\""
+                                + escape(text)
+                                + "\", \""
+                                + escape(fallbackTagName)
+                                + "\")";
                     }
 
                     return "By.xpath(\"" + escape(raw.startsWith("xpath=") ? raw.substring(6) : raw) + "\")";
@@ -721,6 +772,10 @@ public class SeleniumAction {
         return false;
     }
 
+    private String extractElementTextFromTargets() {
+        return extractTargetValue("elementText");
+    }
+
     public String getElementName() {
 
         String text = extractLinkTextFromTargets();
@@ -753,6 +808,7 @@ public class SeleniumAction {
                 safeNameSource(extractButtonTextFromTargets()),
                 safeNameSource(extractLinkTextFromTargets()),
                 safeNameSource(extractAdjacentTextFromTargets()),
+                safeNameSource(extractElementTextFromTargets()),
                 safeNameSource(extractNameFromTargets()),
                 safeNameSource(id),
                 normalizeCssBasedName(stripGenericTokens(firstTargetRawOrEmpty()))
@@ -772,6 +828,9 @@ public class SeleniumAction {
                 selector.startsWith("By.id(")
                         || selector.startsWith("By.name(")
                         || selector.startsWith("By.linkText(")
+                        || selector.startsWith("ByC.attribute(")
+                        || selector.startsWith("ByC.and(")
+                        || selector.startsWith("ByC.text(")
                         || selector.contains("[data-testid=")
                         || selector.contains("[aria-label=")
                         || selector.contains("href=");
@@ -858,12 +917,6 @@ public class SeleniumAction {
     }
 // ------------------ ELEMENT TYPE ------------------
 
-
-    /**
-     * =========================
-     * Helpers d’analyse CSS / XPath / ARIA
-     * =========================
-     **/
 
     private String selectedText;
 
@@ -979,10 +1032,6 @@ public class SeleniumAction {
                 || s.contains("@role='" + r + "'")
                 || s.contains("@role=\"" + r + "\"");
     }
-
-    /**
-     * ------------------ HELPERS ------------------
-     **/
 
 
     private int scoreTarget(SeleniumTarget target) {
@@ -1111,6 +1160,8 @@ public class SeleniumAction {
             case "data-testid":
             case "dataTestid":
                 return 110;
+            case "data-selenium-id":
+                return 115;
             case "data-test":
             case "data-cy":
             case "data-css":
@@ -1121,7 +1172,7 @@ public class SeleniumAction {
             case "data-test-selector":
                 return 108;
             case "id":
-                return 100;
+                return 150;
             case "formControlName":
             case "formcontrolname":
                 return 95;
@@ -1130,13 +1181,20 @@ public class SeleniumAction {
             case "name":
                 return 80;
             case "ariaLabel":
+            case "aria-label":
                 return 75;
+
+            case "placeholder":
+                return 74;
+
             case "ariaLabelledBy":
             case "aria-labelledby":
                 return 72;
 
             case "buttonText":
                 return 70;
+            case "uniqueElementText":
+                return 65;
 
             case "linkText":
                 return 60;
@@ -1265,9 +1323,7 @@ public class SeleniumAction {
                 && !isDynamicValue(cleaned);
     }
 
-    /**
-     * --- extraction attributs depuis selector/targets ---
-     **/
+
     private String normalizeLabel(String label) {
         if (label == null) {
             return "element";
@@ -1312,7 +1368,7 @@ public class SeleniumAction {
     private String extractIdFromTargets() {
         return extractTargetValue("id");
     }
- 
+
     private String extractNameFromTargets() {
         return extractTargetValue("name");
     }
@@ -1396,11 +1452,42 @@ public class SeleniumAction {
 
     public String getElementType() {
 
-        final boolean isTypingCommand = "type".equals(command) || "sendKeys".equals(command)
-                || "keydown".equals(command) || "keyup".equals(command);
+        final boolean isTypingCommand = "sendKeys".equals(command)
+                || "keydown".equals(command) || "keyup".equals(command) || "type".equals(command);
         if ("check".equals(command) || "uncheck".equals(command)) {
             return "CheckBoxElement";
         }
+        if (isTypingCommand) {
+            return "TextFieldElement";
+        }
+        String normalizedTagName = tagName == null ? "" : tagName.trim().toLowerCase(Locale.ROOT);
+
+        switch (normalizedTagName) {
+            case "button":
+                return "ButtonElement";
+
+            case "a":
+                return "LinkElement";
+
+            case "select":
+                return "SelectList";
+
+            case "textarea":
+                return "TextFieldElement";
+
+            case "iframe":
+            case "frame":
+                return "FrameElement";
+
+            case "img":
+                return "ImageElement";
+            case "input":
+                return "TextFieldElement";
+
+            default:
+                break;
+        }
+
         for (SeleniumTarget target : getTargets()) {
             String targetType =
                     target.getTargetType() == null
@@ -1448,9 +1535,6 @@ public class SeleniumAction {
             return "SelectList";
         }
 
-        if ("selectFrame".equals(command)) {
-            return "FrameElement";
-        }
         if ("linktext".equals(command)) {
             return "LinkTextElement";
         }

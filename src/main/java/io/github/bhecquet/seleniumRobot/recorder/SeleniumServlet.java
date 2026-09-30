@@ -11,6 +11,7 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.List;
 
 
 public class SeleniumServlet extends HttpServlet {
@@ -25,9 +26,6 @@ public class SeleniumServlet extends HttpServlet {
         return (frameVarOrNull == null ? "_" : frameVarOrNull) + "|" + selectorLiteral.trim();
     }
 
-    /**
-     * Extrait "import org..." from doc; util si besoin (optionnel)
-     */
     private String getText(Editor editor) {
         return editor.getDocument().getText();
     }
@@ -102,38 +100,96 @@ public class SeleniumServlet extends HttpServlet {
             int framesBlockEnd = findAfterLastFrameDeclLineEnd(text, classBodyStart);
 
 
-            if (seleniumAction.getFramePath() != null && !seleniumAction.getFramePath().isEmpty()) {
+            if (
+                    seleniumAction.getFramePath() != null
+                            && !seleniumAction.getFramePath().isEmpty()
+            ) {
+                List<FrameInfo> framePath =
+                        seleniumAction.getFramePath();
 
-                FrameInfo fr = seleniumAction.getFramePath().get(seleniumAction.getFramePath().size() - 1);
+                /*
+                 * Déclaration of each iframe in order :
+                 *
+                 * document principal
+                 * -> iframeA
+                 * -> iframeB
+                 * -> iframeC
+                 */
+                for (
+                        int frameIndex = 0;
+                        frameIndex < framePath.size();
+                        frameIndex++
+                ) {
+                    FrameInfo currentFrame = framePath.get(frameIndex);
 
-                String frameVarName = computeFrameVarName(fr);
-                String selector = fr.getSelector();
-                if (selector == null || selector.trim().isEmpty() || "null".equals(selector.trim())) {
-                    selector = "By.cssSelector(\"iframe\")";
-                }
+                    String frameVarName = computeFrameVarName(currentFrame);
 
-                String logicalId = computeFrameLogicalId(fr); // ex: "testFrame" ou "33c587"
-                String frameDecl =
-                        "\tprivate static FrameElement " + frameVarName +
-                                " = new FrameElement(\"" + logicalId + "\", " + selector + ");\n";
+                    String selector = currentFrame.getSelector();
 
-                if (!containsExactFrameDecl(text, frameVarName)) {
-                    int insertPos = (framesBlockEnd != -1) ? framesBlockEnd : classBodyStart;
-                    doc.insertString(insertPos, frameDecl);
+                    if (
+                            selector == null
+                                    || selector.trim().isEmpty()
+                                    || "null".equals(
+                                    selector.trim()
+                            )
+                    ) {
+                        if (
+                                currentFrame.getId() != null
+                                        && !currentFrame
+                                        .getId()
+                                        .isBlank()
+                        ) {
+                            selector =
+                                    "By.id(\""
+                                            + currentFrame
+                                            .getId()
+                                            .trim()
+                                            + "\")";
+                        } else {
+                            selector =
+                                    "By.cssSelector(\"iframe\")";
+                        }
+                    }
 
-                    // refresh du texte + recalcul du bloc frames
-                    text = doc.getText();
-                    framesBlockEnd = findAfterLastFrameDeclLineEnd(text, classBodyStart);
+                    String logicalId = computeFrameLogicalId(currentFrame);
+                    String parentFrameReference = "";
+
+                    if (frameIndex > 0) {
+                        FrameInfo parentFrame = framePath.get(frameIndex - 1);
+
+                        parentFrameReference = ", " + computeFrameVarName(parentFrame);
+                    }
+
+                    String frameDecl =
+                            "\tprivate static FrameElement "
+                                    + frameVarName
+                                    + " = new FrameElement(\""
+                                    + logicalId
+                                    + "\", "
+                                    + selector
+                                    + parentFrameReference
+                                    + ");\n";
+
+                    if (!containsExactFrameDecl(text, frameVarName)) {
+                        int insertPos = framesBlockEnd != -1 ? framesBlockEnd : classBodyStart;
+                        doc.insertString(
+                                insertPos,
+                                frameDecl
+                        );
+
+
+                        text = doc.getText();
+
+                        framesBlockEnd = findAfterLastFrameDeclLineEnd(text, classBodyStart);
+                    }
                 }
             }
-
 
             String elementCode = seleniumAction.getWebElementString();
             String elementType = seleniumAction.getElementType();
             String elementName = seleniumAction.getElementName();
-
-
             String selectorLiteral = seleniumAction.getSelector();
+
             String frameVar = null;
             if (seleniumAction.getFramePath() != null && !seleniumAction.getFramePath().isEmpty()) {
                 FrameInfo fr = seleniumAction.getFramePath().get(seleniumAction.getFramePath().size() - 1);
@@ -144,8 +200,6 @@ public class SeleniumServlet extends HttpServlet {
             Object[] existing = findFieldDeclBySelector(text, selectorLiteral, frameVar);
 
             if (existing != null) {
-
-
                 String existingSelector = (existing.length >= 5) ? (String) existing[4] : null;
 
                 boolean existingStrong = isStrongSelector(existingSelector);
@@ -192,15 +246,24 @@ public class SeleniumServlet extends HttpServlet {
                 SELECTOR_TO_VAR.put(keyFor(selectorLiteral, frameVar), oldName);
                 return;
             }
+            String resolvedElementName = elementName;
+            if (existing == null && containsElementName(text, resolvedElementName)
+            ) {
+                String collisionKey = selectorLiteral + "|" + (frameVar == null ? "" : frameVar);
 
+                resolvedElementName = elementName + "_" + shortHash(collisionKey);
 
-            if (!containsExactElementDecl(text, elementType, elementName)) {
+                elementCode = elementCode.replaceFirst("\\b" + java.util.regex.Pattern.quote(elementName)
+                                + "\\b(?=\\s*=)",
+                        java.util.regex.Matcher.quoteReplacement(resolvedElementName));
+            }
+            if (!containsExactElementDecl(text, elementType, resolvedElementName)) {
                 int insertPos = (framesBlockEnd != -1) ? framesBlockEnd : classBodyStart;
                 elementCode = elementCode.replaceFirst("^\\n+", ""); // pas de \n en tête
                 doc.insertString(insertPos, elementCode);
                 text = doc.getText();
             }
-            SELECTOR_TO_VAR.put(keyFor(selectorLiteral, frameVar), elementName);
+            SELECTOR_TO_VAR.put(keyFor(selectorLiteral, frameVar), resolvedElementName);
 
 
             var document = editor.getDocument();
@@ -212,12 +275,9 @@ public class SeleniumServlet extends HttpServlet {
         return null;
     }
 
-    /* ======== Helpers d'insertion sûrs ======== */
+    /* ======== Helpers  ======== */
 
 
-    /**
-     * Renvoie la fin de ligne suivant la dernière déclaration de FrameElement, ou -1 si aucun.
-     */
     private int findAfterLastFrameDeclLineEnd(String text, int searchStart) {
         java.util.regex.Pattern p = java.util.regex.Pattern.compile(
                 "(?m)^\\s*private\\s+static\\s+FrameElement\\s+\\w+\\s*=\\s*new\\s+FrameElement\\s*\\([^;]*\\);\\s*$"
@@ -232,28 +292,48 @@ public class SeleniumServlet extends HttpServlet {
         return afterLineEnd;
     }
 
-    /**
-     * Détecte la déclaration exacte du frame (précis, pour éviter les faux positifs).
-     */
     private boolean containsExactFrameDecl(String text, String frameVarName) {
         String pattern = "(?m)^\\s*private\\s+static\\s+FrameElement\\s+" + java.util.regex.Pattern.quote(frameVarName) + "\\s*=";
         return java.util.regex.Pattern.compile(pattern).matcher(text).find();
     }
 
-    /**
-     * Détecte précisément la déclaration d'un élément donné.
-     */
     private boolean containsExactElementDecl(String text, String elementType, String elementName) {
         String pattern = "(?m)^\\s*private\\s+static\\s+" + java.util.regex.Pattern.quote(elementType) +
                 "\\s+" + java.util.regex.Pattern.quote(elementName) + "\\s*=";
         return java.util.regex.Pattern.compile(pattern).matcher(text).find();
     }
 
-    /* ======== Nommage / ID de frame cohérents avec SeleniumAction ======== */
+    private boolean containsElementName(String text, String elementName) {
+        if (text == null || elementName == null || elementName.isBlank()) {
+            return false;
+        }
 
-    /**
-     * ID logique de la frame (id si dispo, sinon hash du selector)
-     */
+        String pattern =
+                "(?m)^\\s*private\\s+static\\s+"
+                        + "\\w+\\s+"
+                        + java.util.regex.Pattern.quote(
+                        elementName
+                )
+                        + "\\s*=";
+
+        return java.util.regex.Pattern
+                .compile(pattern)
+                .matcher(text)
+                .find();
+    }
+
+    private String shortHash(String value) {
+        int hash = value == null ? 0 : value.hashCode();
+        String hexadecimal = Integer.toHexString(hash);
+
+        return hexadecimal.length() > 4
+                ? hexadecimal.substring(
+                hexadecimal.length() - 4
+        )
+                : hexadecimal;
+    }
+
+
     private String buildFrameId(FrameInfo fr) {
         String id = fr.getId();
         if (id != null && !id.isBlank()) {
@@ -264,15 +344,11 @@ public class SeleniumServlet extends HttpServlet {
         return "frame_" + hash;
     }
 
-    /**
-     * Nom de variable Java pour la frame, DOIT MATCHER SeleniumAction
-     */
     private String buildFrameVarName(FrameInfo fr) {
         String frameId = buildFrameId(fr);
         String sanitized = frameId.replaceAll("[^A-Za-z0-9_]", "_");
         return "frame_" + sanitized;
     }
-
 
     private boolean isStrongSelector(String selector) {
         if (selector == null) return false;
@@ -311,7 +387,6 @@ public class SeleniumServlet extends HttpServlet {
             String text = doc.getText();
             int caretOffset = editor.getCaretModel().getCurrentCaret().getOffset();
 
-            // --- 1) Préparation des infos
             String selectorLiteral = seleniumAction.getSelector();
             String frameVar = null;
             if (seleniumAction.getFramePath() != null && !seleniumAction.getFramePath().isEmpty()) {
@@ -372,7 +447,7 @@ public class SeleniumServlet extends HttpServlet {
 
                     doc.deleteString(lineStart, lineEnd + 1);
 
-                    // mettre à jour caret
+
                     editor.getCaretModel().getCurrentCaret().moveToOffset(lineStart);
 
                     caretOffset = lineStart;
