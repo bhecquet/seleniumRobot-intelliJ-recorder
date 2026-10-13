@@ -43,29 +43,29 @@ public class SeleniumServlet extends HttpServlet {
         if (editor != null) {
 
             try {
-                SeleniumAction action = new Gson().fromJson(request.getReader(), SeleniumAction.class);
+                SeleniumAction action = new Gson().fromJson(
+                        request.getReader(),
+                        SeleniumAction.class
+                );
 
                 LOG.info("[Recorder] POST /event reçu");
-                LOG.info("[Recorder] command=" + action.getCommand()
-                        + " element=" + action.getElementName()
-                        + " type=" + action.getElementType()
-                        + " selector=" + action.getSelector()
-                        + " value=" + action.getValue());
 
-                if (action.getFramePath() != null) {
-                    LOG.info("[Recorder] framePath size=" + action.getFramePath().size());
+                if ("pageLoad".equals(action.getCommand())) {
+                    LOG.info("[Recorder] Page changed" + " reason=" + action.getReason() + " url=" + action.getUrl() + " title=" + action.getTitle());
+                    insertPageMethod(editor, action);
+                } else {
+                    LOG.info("[Recorder] command=" + action.getCommand() + " element=" + action.getElementName() + " type=" + action.getElementType() + " selector=" + action.getSelector() + " value=" + action.getValue());
+
+                    if (action.getFramePath() != null) {
+                        LOG.info("[Recorder] framePath size=" + action.getFramePath().size());
+                    }
+                    LOG.info("[Recorder] insertImports()");
+                    insertImports(editor, action);
+                    LOG.info("[Recorder] insertElement() -> " + action.getElementName());
+                    insertElement(editor, action);
+                    LOG.info("[Recorder] insertElementAction() -> " + action.getFormattedCommand().trim());
+                    insertElementAction(editor, action);
                 }
-
-                LOG.info("[Recorder] insertImports()");
-
-                insertImports(editor, action);
-
-                LOG.info("[Recorder] insertElement() -> " + action.getElementName());
-
-                insertElement(editor, action);
-
-                LOG.info("[Recorder] insertElementAction() -> " + action.getFormattedCommand().trim());
-                insertElementAction(editor, action);
 
             } catch (IOException e) {
                 throw new RuntimeException(e);
@@ -82,6 +82,153 @@ public class SeleniumServlet extends HttpServlet {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private int findFirstMethodStart(String text, int searchStart) {
+        java.util.regex.Pattern methodPattern =
+                java.util.regex.Pattern.compile("(?m)^\\s*" + "(public|protected|private)\\s+" + "[\\w<>,\\s\\[\\]]+\\s+" + "\\w+\\s*\\(");
+        java.util.regex.Matcher matcher = methodPattern.matcher(text);
+
+        return matcher.find(searchStart)
+                ? matcher.start()
+                : -1;
+    }
+
+    private void insertPageMethod(Editor editor, SeleniumAction action) {
+        if ("load".equals(action.getReason())) {
+            return;
+        }
+
+        String url = action.getUrl();
+
+        if (url == null || url.isBlank()) {
+            return;
+        }
+
+        WriteCommandAction.runWriteCommandAction(project, () -> {
+                    var document = editor.getDocument();
+                    String text = document.getText();
+
+                    String baseMethodName = buildPageMethodName(url, action.getTitle());
+
+                    String methodName = findAvailableMethodName(text, baseMethodName);
+                    int currentCaretOffset = editor.getCaretModel().getCurrentCaret().getOffset();
+                    String methodCall = "\t\t" + methodName + "();\n";
+                    document.insertString(currentCaretOffset, methodCall);
+                    int classClosingBrace = document.getText().lastIndexOf('}');
+                    if (classClosingBrace < 0) {
+                        return;
+                    }
+                    String newMethod = "\n\tprivate static void " + methodName + "() {\n\n\t}\n";
+
+                    document.insertString(classClosingBrace, newMethod);
+                    int methodBodyOffset = classClosingBrace + newMethod.indexOf("{") + 2;
+                    editor.getCaretModel().getCurrentCaret().moveToOffset(methodBodyOffset);
+                    LOG.info("[Recorder] New page method created" + " method=" + methodName + " url=" + url);
+                }
+        );
+    }
+
+    private String buildPageMethodName(String url, String title) {
+        String source = "";
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String fragment = uri.getFragment();
+            if (fragment != null && !fragment.isBlank()) {
+                source = fragment;
+            } else {
+                String path = uri.getPath();
+                if (path != null && !path.isBlank() && !"/".equals(path)) {
+                    String[] pathParts = path.split("/");
+                    for (int index = pathParts.length - 1; index >= 0; index--) {
+                        if (pathParts[index] != null && !pathParts[index].isBlank()
+                        ) {
+                            source = pathParts[index];
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (
+                IllegalArgumentException error
+        ) {
+            LOG.warn("[Recorder] Invalid page URL: " + url);
+        }
+
+        if (
+                source == null || source.isBlank()) {
+            source = title;
+        }
+
+        if (source == null || source.isBlank()) {
+            source = "newPage";
+        }
+
+        source = source.replaceFirst("\\.[A-Za-z0-9]+$", "");
+
+        String[] words = source.split("[^A-Za-z0-9]+");
+
+        StringBuilder methodName = new StringBuilder();
+
+        for (String word : words) {
+            if (word == null || word.isBlank()) {
+                continue;
+            }
+
+            if (methodName.isEmpty()) {
+                methodName.append(word.substring(0, 1).toLowerCase());
+
+                if (word.length() > 1) {
+                    methodName.append(word.substring(1));
+                }
+            } else {
+                methodName.append(word.substring(0, 1).toUpperCase());
+
+                if (word.length() > 1) {
+                    methodName.append(word.substring(1));
+                }
+            }
+        }
+
+        if (methodName.isEmpty()) {
+            methodName.append("newPage");
+        }
+
+        if (Character.isDigit(methodName.charAt(0))) {
+            methodName.insert(0, "page");
+        }
+
+        if (!methodName.toString().endsWith("Page")
+        ) {
+            methodName.append("Page");
+        }
+
+        return methodName.toString();
+    }
+
+    private String findAvailableMethodName(String text, String baseMethodName) {
+        String candidate = baseMethodName;
+        int suffix = 2;
+
+        while (containsMethod(text, candidate)) {
+            candidate = baseMethodName + suffix;
+            suffix++;
+        }
+
+        return candidate;
+    }
+
+    private boolean containsMethod(
+            String text,
+            String methodName
+    ) {
+        String pattern = "(?m)^\\s*" + "(public|protected|private)" + "\\s+static\\s+void\\s+" + java.util.regex.Pattern.quote(methodName)
+                + "\\s*\\(";
+
+        return java.util.regex.Pattern
+                .compile(pattern)
+                .matcher(text)
+                .find();
     }
 
     private String insertElement(Editor editor, SeleniumAction seleniumAction) {
@@ -108,7 +255,7 @@ public class SeleniumServlet extends HttpServlet {
                         seleniumAction.getFramePath();
 
                 /*
-                 * Déclaration of each iframe in order :
+                 * Declaration of each iframe in order :
                  *
                  * document principal
                  * -> iframeA
@@ -172,11 +319,7 @@ public class SeleniumServlet extends HttpServlet {
 
                     if (!containsExactFrameDecl(text, frameVarName)) {
                         int insertPos = framesBlockEnd != -1 ? framesBlockEnd : classBodyStart;
-                        doc.insertString(
-                                insertPos,
-                                frameDecl
-                        );
-
+                        doc.insertString(insertPos, frameDecl);
 
                         text = doc.getText();
 
@@ -258,8 +401,14 @@ public class SeleniumServlet extends HttpServlet {
                         java.util.regex.Matcher.quoteReplacement(resolvedElementName));
             }
             if (!containsExactElementDecl(text, elementType, resolvedElementName)) {
-                int insertPos = (framesBlockEnd != -1) ? framesBlockEnd : classBodyStart;
-                elementCode = elementCode.replaceFirst("^\\n+", ""); // pas de \n en tête
+                text = doc.getText();
+                int insertPos = findFirstMethodStart(text, classBodyStart);
+
+                if (insertPos < 0) {
+                    insertPos = text.lastIndexOf('}');
+                }
+
+                elementCode = elementCode.replaceFirst("^\\n+", "");
                 doc.insertString(insertPos, elementCode);
                 text = doc.getText();
             }
