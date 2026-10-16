@@ -299,12 +299,16 @@ public class SeleniumAction {
             String elemType = getElementType();
 
             if ("LinkElement".equals(elemType)) {
-                String linkText = extractLinkTextFromTargets();
+                String uniqueLinkText = extractUniqueLinkTextFromTargets();
 
-                if (linkText != null && !linkText.isBlank() && !isBadNameSource(linkText)) {
+                if (
+                        uniqueLinkText != null
+                                && !uniqueLinkText.isBlank()
+                                && !isBadNameSource(uniqueLinkText)
+                ) {
                     selector = String.format(
                             "By.linkText(\"%s\")",
-                            escape(cleanText(linkText))
+                            escape(cleanText(uniqueLinkText))
                     );
                 }
             } else if ("ButtonElement".equals(elemType)) {
@@ -320,6 +324,7 @@ public class SeleniumAction {
 
         return selector;
     }
+
 
     private boolean isInvalidSelector(String s) {
         if (s == null) return true;
@@ -440,25 +445,17 @@ public class SeleniumAction {
                 return String.format("By.id(\"%s\")", escape(raw));
 
             case "checkboxNameValue":
-                String[] checkboxParts =
-                        raw.split(
-                                Pattern.quote("||VALUE||"),
-                                2
-                        );
+                String[] checkboxParts = raw.split(Pattern.quote("||VALUE||"), 2);
 
                 if (checkboxParts.length != 2) {
                     return null;
                 }
 
-                String checkboxName =
-                        checkboxParts[0];
+                String checkboxName = checkboxParts[0];
 
-                String checkboxValue =
-                        checkboxParts[1];
+                String checkboxValue = checkboxParts[1];
 
-                if (
-                        checkboxName.isBlank() ||
-                                checkboxValue.isBlank()
+                if (checkboxName.isBlank() || checkboxValue.isBlank()
                 ) {
                     return null;
                 }
@@ -476,30 +473,32 @@ public class SeleniumAction {
 
 
             case "buttonText":
+            case "linkText":
                 return null;
 
-            case "linkText":
-                String cleaned =
-                        cleanText(raw);
+            case "uniqueButtonText":
+                String uniqueButtonText = cleanText(raw);
 
-                if (
-                        cleaned == null
-                                || cleaned.isBlank()
-                                || cleaned.length() > 60
-                                || isBadNameSource(cleaned)
+                if (uniqueButtonText == null || uniqueButtonText.isBlank() || uniqueButtonText.length() > 80 || isBadNameSource(uniqueButtonText)
                 ) {
                     return null;
                 }
 
-                return "By.linkText(\""
-                        + escape(cleaned)
-                        + "\")";
+                return "ByC.text(\"" + escape(uniqueButtonText) + "\", \"button\")";
+
+            case "uniqueLinkText":
+                String uniqueLinkText = cleanText(raw);
+
+                if (uniqueLinkText == null || uniqueLinkText.isBlank() || uniqueLinkText.length() > 60 || isBadNameSource(uniqueLinkText)
+                ) {
+                    return null;
+                }
+
+                return "By.linkText(\"" + escape(uniqueLinkText) + "\")";
 
             case "ariaLabel":
             case "aria-label":
-                return "ByC.attribute(\"aria-label\", \""
-                        + escape(cleanText(raw))
-                        + "\")";
+                return "ByC.attribute(\"aria-label\", \"" + escape(cleanText(raw)) + "\")";
 
             case "css":
             case "css:finder":
@@ -1207,14 +1206,18 @@ public class SeleniumAction {
                 return 72;
 
             case "buttonText":
+            case "linkText":
                 return 0;
+
             case "labelText":
                 return 68;
+
+            case "uniqueButtonText":
+            case "uniqueLinkText":
+                return 66;
+
             case "uniqueElementText":
                 return 65;
-
-            case "linkText":
-                return 60;
             case "css":
             case "css:finder":
                 return 50;
@@ -1392,6 +1395,14 @@ public class SeleniumAction {
 
     private String extractLinkTextFromTargets() {
         return extractTargetValue("linkText");
+    }
+
+    private String extractUniqueLinkTextFromTargets() {
+        return extractTargetValue("uniqueLinkText");
+    }
+
+    private String extractUniqueButtonTextFromTargets() {
+        return extractTargetValue("uniqueButtonText");
     }
 
     private String extractAriaLabelFromTargets() {

@@ -4,8 +4,10 @@ import com.google.gson.Gson;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.VirtualFile;
 
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -18,9 +20,15 @@ public class SeleniumServlet extends HttpServlet {
 
     private Project project;
 
+    private final PageClassManager pageClassManager;
+    private volatile Editor currentTargetEditor;
+    private volatile boolean initialPageLoadHandled;
+    private volatile String lastPageUrl;
+
     private static final Logger LOG = Logger.getInstance(SeleniumServlet.class);
 
     private static final java.util.concurrent.ConcurrentMap<String, String> SELECTOR_TO_VAR = new java.util.concurrent.ConcurrentHashMap<>();
+
 
     private String keyFor(String selectorLiteral, String frameVarOrNull) {
         return (frameVarOrNull == null ? "_" : frameVarOrNull) + "|" + selectorLiteral.trim();
@@ -33,55 +41,45 @@ public class SeleniumServlet extends HttpServlet {
 
     public SeleniumServlet(Project project) {
         this.project = project;
+        this.pageClassManager = new PageClassManager(project);
     }
 
 
     @Override
     protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
-
-        Editor editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
-        if (editor != null) {
-
-            try {
-                SeleniumAction action = new Gson().fromJson(
-                        request.getReader(),
-                        SeleniumAction.class
-                );
-
-                LOG.info("[Recorder] POST /event reçu");
-
-                if ("pageLoad".equals(action.getCommand())) {
-                    LOG.info("[Recorder] Page changed" + " reason=" + action.getReason() + " url=" + action.getUrl() + " title=" + action.getTitle());
-                    insertPageMethod(editor, action);
-                } else {
-                    LOG.info("[Recorder] command=" + action.getCommand() + " element=" + action.getElementName() + " type=" + action.getElementType() + " selector=" + action.getSelector() + " value=" + action.getValue());
-
-                    if (action.getFramePath() != null) {
-                        LOG.info("[Recorder] framePath size=" + action.getFramePath().size());
-                    }
-                    LOG.info("[Recorder] insertImports()");
-                    insertImports(editor, action);
-                    LOG.info("[Recorder] insertElement() -> " + action.getElementName());
-                    insertElement(editor, action);
-                    LOG.info("[Recorder] insertElementAction() -> " + action.getFormattedCommand().trim());
-                    insertElementAction(editor, action);
+        Editor selectedEditor = FileEditorManager.getInstance(project).getSelectedTextEditor();
+        if (selectedEditor != null) {
+            SeleniumAction action = new Gson().fromJson(request.getReader(), SeleniumAction.class);
+            LOG.info("[Recorder] POST /event reçu");
+            if ("pageLoad".equals(action.getCommand())) {
+                LOG.info("[Recorder] Page changed reason=" + action.getReason() + " url=" + action.getUrl() + " title=" + action.getTitle());
+                if (!initialPageLoadHandled) {
+                    initialPageLoadHandled = true;
+                    lastPageUrl = action.getUrl();
+                    currentTargetEditor = selectedEditor;
+                } else if (action.getUrl() != null && !action.getUrl().equals(lastPageUrl)) {
+                    lastPageUrl = action.getUrl();
+                    Editor sourceEditor = currentTargetEditor != null ? currentTargetEditor : selectedEditor;
+                    currentTargetEditor = insertPageObject(sourceEditor, action);
                 }
-
-            } catch (IOException e) {
-                throw new RuntimeException(e);
+            } else {
+                Editor targetEditor = currentTargetEditor != null ? currentTargetEditor : selectedEditor;
+                currentTargetEditor = targetEditor;
+                LOG.info("[Recorder] command=" + action.getCommand() + " element=" + action.getElementName() + " type=" + action.getElementType() + " selector=" + action.getSelector() + " value=" + action.getValue());
+                if (action.getFramePath() != null) {
+                    LOG.info("[Recorder] framePath size=" + action.getFramePath().size());
+                }
+                insertImports(targetEditor, action);
+                insertElement(targetEditor, action);
+                insertElementAction(targetEditor, action);
             }
         }
-
         response.setHeader("Access-Control-Allow-Origin", "*");
         response.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
         response.setHeader("Access-Control-Allow-Headers", "Content-Type");
         response.setStatus(200);
-        try {
-            response.getOutputStream().print("OK");
-            response.getOutputStream().flush();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+        response.getOutputStream().print("OK");
+        response.getOutputStream().flush();
     }
 
     private int findFirstMethodStart(String text, int searchStart) {
@@ -93,6 +91,64 @@ public class SeleniumServlet extends HttpServlet {
                 ? matcher.start()
                 : -1;
     }
+
+
+    private Editor insertPageObject(Editor sourceEditor, SeleniumAction action) {
+        String url = action.getUrl();
+
+        if (url == null || url.isBlank()) {
+            return sourceEditor;
+        }
+
+        VirtualFile sourceFile = FileDocumentManager.getInstance().getFile(sourceEditor.getDocument());
+
+        if (sourceFile == null || sourceFile.getParent() == null) {
+            LOG.warn("[Recorder] Impossible de retrouver le fichier Java source");
+            return sourceEditor;
+        }
+
+        String pageMethodName = buildPageMethodName(url, action.getTitle());
+        String packageName = extractPackageName(sourceEditor.getDocument().getText());
+        String methodCall = pageClassManager.buildMethodCall(pageMethodName);
+
+        insertPageObjectCall(sourceEditor, methodCall);
+
+        VirtualFile pageFile = pageClassManager.createOrFindPageFile(
+                sourceFile.getParent(),
+                packageName,
+                pageMethodName
+        );
+
+        Editor pageEditor = pageClassManager.openPageEditor(pageFile);
+
+        LOG.info("[Recorder] Page Object actif class=" + pageClassManager.buildClassName(pageMethodName) + " file=" + pageFile.getPath());
+
+        return pageEditor;
+    }
+
+    private void insertPageObjectCall(Editor editor, String methodCall) {
+        WriteCommandAction.runWriteCommandAction(project, () -> {
+            var document = editor.getDocument();
+            int caretOffset = editor.getCaretModel().getOffset();
+            String code = "\t\t" + methodCall + "\n";
+
+            document.insertString(caretOffset, code);
+            editor.getCaretModel().moveToOffset(caretOffset + code.length());
+        });
+    }
+
+    private String extractPackageName(String javaCode) {
+        if (javaCode == null || javaCode.isBlank()) {
+            return "";
+        }
+
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?m)^\\s*package\\s+([^;]+);")
+                .matcher(javaCode);
+
+        return matcher.find() ? matcher.group(1).trim() : "";
+    }
+
 
     private void insertPageMethod(Editor editor, SeleniumAction action) {
         if ("load".equals(action.getReason())) {
