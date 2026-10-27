@@ -56,7 +56,11 @@ public class PageClassManager {
                 + "}\n";
     }
 
-    public VirtualFile createOrFindPageFile(VirtualFile sourceDirectory, String packageName, String pageMethodName) {
+    public VirtualFile createOrFindPageFile(
+            VirtualFile sourceDirectory,
+            String packageName,
+            String pageMethodName
+    ) {
         if (sourceDirectory == null || !sourceDirectory.isDirectory()) {
             throw new IllegalArgumentException("Le dossier source est invalide");
         }
@@ -65,24 +69,44 @@ public class PageClassManager {
         VirtualFile existingFile = sourceDirectory.findChild(fileName);
 
         if (existingFile != null) {
+            System.out.println("[Recorder] Page Object  exist already: " + existingFile.getPath());
             return existingFile;
         }
 
         AtomicReference<VirtualFile> createdFile = new AtomicReference<>();
-        AtomicReference<IOException> creationError = new AtomicReference<>();
 
-        ApplicationManager.getApplication().runWriteAction(() -> {
-            try {
-                VirtualFile file = sourceDirectory.createChildData(this, fileName);
-                VfsUtil.saveText(file, buildClassContent(packageName, pageMethodName));
-                createdFile.set(file);
-            } catch (IOException error) {
-                creationError.set(error);
-            }
-        });
+        AtomicReference<Throwable> creationError = new AtomicReference<>();
+
+        Runnable creationTask = () ->
+                ApplicationManager.getApplication().runWriteAction(() -> {
+                    try {
+                        System.out.println("[Recorder] Creation of file  : " + sourceDirectory.getPath() + "/" + fileName);
+
+                        VirtualFile file = sourceDirectory.createChildData(this, fileName);
+                        VfsUtil.saveText(file, buildClassContent(packageName, pageMethodName));
+
+                        file.refresh(false, false);
+                        sourceDirectory.refresh(false, true);
+                        createdFile.set(file);
+                    } catch (Throwable error) {
+                        creationError.set(error);
+                    }
+                });
+
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            creationTask.run();
+        } else {
+            ApplicationManager.getApplication()
+                    .invokeAndWait(creationTask);
+        }
 
         if (creationError.get() != null) {
-            throw new IllegalStateException("Impossible de créer le fichier " + fileName, creationError.get());
+            throw new IllegalStateException("Impossible de créer le fichier " + fileName + " dans " + sourceDirectory.getPath(), creationError.get()
+            );
+        }
+
+        if (createdFile.get() == null) {
+            throw new IllegalStateException("Le fichier " + fileName + " n’a pas été créé");
         }
 
         return createdFile.get();
@@ -90,25 +114,62 @@ public class PageClassManager {
 
     public Editor openPageEditor(VirtualFile pageFile) {
         if (project == null) {
-            throw new IllegalStateException("Le projet IntelliJ est obligatoire");
+            throw new IllegalStateException(
+                    "Le projet IntelliJ est obligatoire"
+            );
         }
 
         if (pageFile == null || pageFile.isDirectory()) {
-            throw new IllegalArgumentException("Le fichier Page Object est invalide");
+            throw new IllegalArgumentException(
+                    "Le fichier Page Object est invalide"
+            );
         }
 
-        int bodyOffset = findExecuteBodyOffset(readFileContent(pageFile));
-        OpenFileDescriptor descriptor = new OpenFileDescriptor(project, pageFile, bodyOffset);
-        Editor editor = FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+        AtomicReference<Editor> editorReference = new AtomicReference<>();
 
-        if (editor == null) {
-            throw new IllegalStateException("Impossible d’ouvrir " + pageFile.getName());
+        AtomicReference<Throwable> openingError = new AtomicReference<>();
+
+        Runnable openingTask = () -> {
+            try {
+                int bodyOffset = findExecuteBodyOffset(readFileContent(pageFile));
+
+                OpenFileDescriptor descriptor = new OpenFileDescriptor(project, pageFile, bodyOffset);
+
+                Editor editor = FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+
+                if (editor == null) {
+                    throw new IllegalStateException("Impossible d’ouvrir " + pageFile.getName());
+                }
+
+                editor.getCaretModel().moveToOffset(bodyOffset);
+
+                editor.getScrollingModel().scrollToCaret(ScrollType.CENTER);
+
+                editorReference.set(editor);
+
+            } catch (Throwable error) {
+                openingError.set(error);
+            }
+        };
+
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            openingTask.run();
+        } else {
+            ApplicationManager.getApplication().invokeAndWait(openingTask);
         }
 
-        editor.getCaretModel().moveToOffset(bodyOffset);
-        editor.getScrollingModel().scrollToCaret(ScrollType.CENTER);
+        if (openingError.get() != null) {
+            throw new IllegalStateException("Impossible d’ouvrir le Page Object " + pageFile.getPath(),
+                    openingError.get()
+            );
+        }
 
-        return editor;
+        if (editorReference.get() == null) {
+            throw new IllegalStateException("Aucun éditeur obtenu pour " + pageFile.getPath()
+            );
+        }
+
+        return editorReference.get();
     }
 
     public int findExecuteBodyOffset(String content) {
