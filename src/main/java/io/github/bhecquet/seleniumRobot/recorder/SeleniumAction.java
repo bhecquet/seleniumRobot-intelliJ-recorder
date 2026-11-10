@@ -13,6 +13,9 @@ public class SeleniumAction {
     private String tagName;
     private List<List<String>> targets;
     private List<FrameInfo> framePath;
+    private String url;
+    private String title;
+    private String reason;
 
 
     public void setFramePath(List<FrameInfo> framePath) {
@@ -29,6 +32,43 @@ public class SeleniumAction {
 
     public void setTagName(String tagName) {
         this.tagName = tagName;
+    }
+
+    public String getUrl() {
+        return url;
+    }
+
+    public void setUrl(String url) {
+        this.url = url;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTargets(List<List<String>> targets) {
+        this.targets = targets;
+    }
+
+    public void setCommand(String command) {
+        this.command = command;
+    }
+
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+
+    public boolean isPageLoad() {
+        return "pageLoad".equals(command);
+    }
+
+    public String getReason() {
+        return reason;
+    }
+
+    public void setReason(String reason) {
+        this.reason = reason;
     }
 
     public String getCommand() {
@@ -202,6 +242,7 @@ public class SeleniumAction {
                 extractNameFromTargets(),
                 extractIdFromTargets(),
                 extractDataTestidFromTargets(),
+                extractLabelTextFromTargets(),
                 elementName
         ))) + "\"";
 
@@ -258,12 +299,16 @@ public class SeleniumAction {
             String elemType = getElementType();
 
             if ("LinkElement".equals(elemType)) {
-                String linkText = extractLinkTextFromTargets();
+                String uniqueLinkText = extractUniqueLinkTextFromTargets();
 
-                if (linkText != null && !linkText.isBlank() && !isBadNameSource(linkText)) {
+                if (
+                        uniqueLinkText != null
+                                && !uniqueLinkText.isBlank()
+                                && !isBadNameSource(uniqueLinkText)
+                ) {
                     selector = String.format(
                             "By.linkText(\"%s\")",
-                            escape(cleanText(linkText))
+                            escape(cleanText(uniqueLinkText))
                     );
                 }
             } else if ("ButtonElement".equals(elemType)) {
@@ -279,6 +324,7 @@ public class SeleniumAction {
 
         return selector;
     }
+
 
     private boolean isInvalidSelector(String s) {
         if (s == null) return true;
@@ -342,6 +388,14 @@ public class SeleniumAction {
                 return "ByC.attribute(\"data-test-selector\", \""
                         + escape(raw)
                         + "\")";
+            case "labelText":
+                String labelText = cleanText(raw);
+
+                if (labelText == null || labelText.isBlank()) {
+                    return null;
+                }
+
+                return "ByC.label(\"" + escape(labelText) + "\")";
             case "uniqueElementText":
                 String uniqueText =
                         cleanText(raw);
@@ -391,25 +445,17 @@ public class SeleniumAction {
                 return String.format("By.id(\"%s\")", escape(raw));
 
             case "checkboxNameValue":
-                String[] checkboxParts =
-                        raw.split(
-                                Pattern.quote("||VALUE||"),
-                                2
-                        );
+                String[] checkboxParts = raw.split(Pattern.quote("||VALUE||"), 2);
 
                 if (checkboxParts.length != 2) {
                     return null;
                 }
 
-                String checkboxName =
-                        checkboxParts[0];
+                String checkboxName = checkboxParts[0];
 
-                String checkboxValue =
-                        checkboxParts[1];
+                String checkboxValue = checkboxParts[1];
 
-                if (
-                        checkboxName.isBlank() ||
-                                checkboxValue.isBlank()
+                if (checkboxName.isBlank() || checkboxValue.isBlank()
                 ) {
                     return null;
                 }
@@ -427,47 +473,32 @@ public class SeleniumAction {
 
 
             case "buttonText":
-                String buttonText = cleanText(raw);
-
-                if (buttonText == null || buttonText.isBlank()) {
-                    return null;
-                }
-
-                return "By.xpath(\"//button[normalize-space(.)='"
-                        + escape(buttonText)
-                        + "']"
-                        + " | "
-                        + "//input["
-                        + "(@type='button' or @type='submit' or @type='reset')"
-                        + " and @value='"
-                        + escape(buttonText)
-                        + "']\")";
-
-
             case "linkText":
-                String cleaned = cleanText(raw);
+                return null;
 
-                if (cleaned == null || cleaned.isBlank()) {
+            case "uniqueButtonText":
+                String uniqueButtonText = cleanText(raw);
+
+                if (uniqueButtonText == null || uniqueButtonText.isBlank() || uniqueButtonText.length() > 80 || isBadNameSource(uniqueButtonText)
+                ) {
                     return null;
                 }
 
+                return "ByC.text(\"" + escape(uniqueButtonText) + "\", \"button\")";
 
-                if (cleaned.length() <= 80 && !isBadNameSource(cleaned)) {
-                    return "By.linkText(\""
-                            + escape(cleaned)
-                            + "\")";
+            case "uniqueLinkText":
+                String uniqueLinkText = cleanText(raw);
+
+                if (uniqueLinkText == null || uniqueLinkText.isBlank() || uniqueLinkText.length() > 60 || isBadNameSource(uniqueLinkText)
+                ) {
+                    return null;
                 }
 
-
-                return "By.xpath(\"//a[contains(normalize-space(.), '"
-                        + escape(cleaned)
-                        + "')]\")";
+                return "By.linkText(\"" + escape(uniqueLinkText) + "\")";
 
             case "ariaLabel":
             case "aria-label":
-                return "ByC.attribute(\"aria-label\", \""
-                        + escape(cleanText(raw))
-                        + "\")";
+                return "ByC.attribute(\"aria-label\", \"" + escape(cleanText(raw)) + "\")";
 
             case "css":
             case "css:finder":
@@ -515,13 +546,6 @@ public class SeleniumAction {
                     }
                 }
 
-
-                String id = extractAttributeFromXPath(raw, "id");
-                if (id != null && isBusinessId(id)) {
-                    return "By.id(\"" + escape(id) + "\")";
-                }
-
-
                 if (getElementType().equals("CheckBoxElement")) {
 
                     String idAttr = extractAttributeFromXPath(raw, "id");
@@ -566,24 +590,13 @@ public class SeleniumAction {
 
 
                 if (text != null && !text.isEmpty()) {
-                    return "By.xpath(\"//*[contains(normalize-space(.),'"
-                            + escape(text.substring(0, Math.min(30, text.length())))
-                            + "')]\")";
+                    String originalXPath = raw.startsWith("xpath=")
+                            ? raw.substring("xpath=".length())
+                            : raw;
+
+                    return "By.xpath(\"" + escape(originalXPath) + "\")";
                 }
 
-
-                String fallbackText = firstNonEmpty(
-                        safeNameSource(extractButtonTextFromTargets()),
-                        safeNameSource(extractAriaLabelFromTargets()),
-                        safeNameSource(extractAdjacentTextFromTargets()),
-                        safeNameSource(extractLinkTextFromTargets())
-                );
-
-                if (!"element".equals(fallbackText)) {
-                    return "By.xpath(\"//*[contains(normalize-space(.), '"
-                            + escape(cleanText(fallbackText))
-                            + "')]\")";
-                }
 
                 String fallbackXPath = raw.startsWith("xpath=")
                         ? raw.substring("xpath=".length())
@@ -809,6 +822,7 @@ public class SeleniumAction {
                 safeNameSource(extractLinkTextFromTargets()),
                 safeNameSource(extractAdjacentTextFromTargets()),
                 safeNameSource(extractElementTextFromTargets()),
+                safeNameSource(extractLabelTextFromTargets()),
                 safeNameSource(extractNameFromTargets()),
                 safeNameSource(id),
                 normalizeCssBasedName(stripGenericTokens(firstTargetRawOrEmpty()))
@@ -1065,7 +1079,7 @@ public class SeleniumAction {
             score -= 60;
         }
 
-        if (looksLikeDomPath(raw)) {
+        if (("css".equals(type) || "css:finder".equals(type)) && looksLikeDomPath(raw)) {
             score -= 60;
         }
 
@@ -1157,11 +1171,13 @@ public class SeleniumAction {
     private int scoreType(String type) {
         if (type == null) return -100;
         switch (type) {
-            case "data-testid":
-            case "dataTestid":
-                return 110;
+            case "id":
+                return 150;
             case "data-selenium-id":
                 return 115;
+            case "data-testid":
+            case "datatestid":
+                return 110;
             case "data-test":
             case "data-cy":
             case "data-css":
@@ -1171,8 +1187,6 @@ public class SeleniumAction {
             case "data-test-id":
             case "data-test-selector":
                 return 108;
-            case "id":
-                return 150;
             case "formControlName":
             case "formcontrolname":
                 return 95;
@@ -1192,12 +1206,18 @@ public class SeleniumAction {
                 return 72;
 
             case "buttonText":
-                return 70;
+            case "linkText":
+                return 0;
+
+            case "labelText":
+                return 68;
+
+            case "uniqueButtonText":
+            case "uniqueLinkText":
+                return 66;
+
             case "uniqueElementText":
                 return 65;
-
-            case "linkText":
-                return 60;
             case "css":
             case "css:finder":
                 return 50;
@@ -1275,7 +1295,7 @@ public class SeleniumAction {
         String t = type.toLowerCase(Locale.ROOT);
         String r = raw.toLowerCase(Locale.ROOT);
 
-        if (t.contains("data-testid") || t.contains("datatestid")) {
+        if (t.equals("data-selenium-id") || t.contains("data-testid") || t.contains("datatestid")) {
             return true;
         }
 
@@ -1377,10 +1397,22 @@ public class SeleniumAction {
         return extractTargetValue("linkText");
     }
 
+    private String extractUniqueLinkTextFromTargets() {
+        return extractTargetValue("uniqueLinkText");
+    }
+
+    private String extractUniqueButtonTextFromTargets() {
+        return extractTargetValue("uniqueButtonText");
+    }
+
     private String extractAriaLabelFromTargets() {
         String v = extractTargetValue("ariaLabel");
         if (v == null) v = extractTargetValue("aria-label");
         return v;
+    }
+
+    private String extractLabelTextFromTargets() {
+        return extractTargetValue("labelText");
     }
 
     private String extractDataTestidFromTargets() {

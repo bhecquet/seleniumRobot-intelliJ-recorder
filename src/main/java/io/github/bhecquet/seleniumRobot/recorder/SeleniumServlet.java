@@ -1,87 +1,578 @@
 package io.github.bhecquet.seleniumRobot.recorder;
 
 import com.google.gson.Gson;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.text.StringUtil;
+import com.intellij.openapi.vfs.VirtualFile;
 
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.net.URI;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 public class SeleniumServlet extends HttpServlet {
 
     private Project project;
 
+    private final PageClassManager pageClassManager;
+    private volatile Editor mainEditor;
+    private volatile Editor currentTargetEditor;
+    private volatile boolean initialPageLoadHandled;
+    private volatile String lastPageUrl;
+    private volatile String activePageUrl;
+    private volatile String pendingPageUrl;
+    private volatile String pendingPageTitle;
+    private volatile boolean actionRecordedSinceLastPageLoad;
+    private final ConcurrentMap<String, Integer> pageVisitCounts = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> pageClassToVariable = new ConcurrentHashMap<>();
+
+
     private static final Logger LOG = Logger.getInstance(SeleniumServlet.class);
 
     private static final java.util.concurrent.ConcurrentMap<String, String> SELECTOR_TO_VAR = new java.util.concurrent.ConcurrentHashMap<>();
+
 
     private String keyFor(String selectorLiteral, String frameVarOrNull) {
         return (frameVarOrNull == null ? "_" : frameVarOrNull) + "|" + selectorLiteral.trim();
     }
 
-    private String getText(Editor editor) {
-        return editor.getDocument().getText();
-    }
-
-
     public SeleniumServlet(Project project) {
         this.project = project;
+        this.pageClassManager = new PageClassManager(project);
+        resetRecordingSession();
     }
 
+    public void resetRecordingSession() {
+        mainEditor = null;
+        currentTargetEditor = null;
+        lastPageUrl = null;
+        activePageUrl = null;
+        pendingPageUrl = null;
+        pendingPageTitle = null;
+        initialPageLoadHandled = false;
+        actionRecordedSinceLastPageLoad = false;
+        SELECTOR_TO_VAR.clear();
+
+        pageVisitCounts.clear();
+        pageClassToVariable.clear();
+
+        LOG.info("[Recorder] Recording session reset");
+    }
 
     @Override
-    protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
+    protected void doPost(
+            HttpServletRequest request,
+            HttpServletResponse response
+    ) throws IOException {
+        Editor selectedEditor = FileEditorManager
+                .getInstance(project)
+                .getSelectedTextEditor();
 
-        Editor editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
-        if (editor != null) {
+        if (selectedEditor != null) {
+            if (mainEditor == null) {
+                mainEditor = selectedEditor;
+                currentTargetEditor = selectedEditor;
+                LOG.info("[Recorder] Main editor initialized: " + getEditorFilePath(mainEditor));
+            }
 
-            try {
-                SeleniumAction action = new Gson().fromJson(request.getReader(), SeleniumAction.class);
+            SeleniumAction action = new Gson().fromJson(request.getReader(), SeleniumAction.class);
+            LOG.info("[Recorder] POST /event reçu");
+            LOG.info("[Recorder] COMMAND = " + action.getCommand());
 
-                LOG.info("[Recorder] POST /event reçu");
-                LOG.info("[Recorder] command=" + action.getCommand()
-                        + " element=" + action.getElementName()
-                        + " type=" + action.getElementType()
-                        + " selector=" + action.getSelector()
-                        + " value=" + action.getValue());
+            if ("pageLoad".equals(action.getCommand())) {
+                String pageUrl = normalizePageUrl(action.getUrl());
 
-                if (action.getFramePath() != null) {
-                    LOG.info("[Recorder] framePath size=" + action.getFramePath().size());
+                LOG.info("[Recorder] PAGE LOAD DETECTED" + " reason=" + action.getReason() + " url=" + pageUrl + " title=" + action.getTitle());
+
+                if (isRecordablePageUrl(pageUrl) && !pageUrl.equals(lastPageUrl)) {
+                    pendingPageUrl = pageUrl;
+                    pendingPageTitle = action.getTitle();
+                    lastPageUrl = pageUrl;
+
+                    LOG.info("[Recorder] Page pending until first action" + " url=" + pendingPageUrl
+                    );
+                } else {
+                    LOG.info("[Recorder] pageLoad ignored" + " url=" + pageUrl
+                    );
                 }
 
-                LOG.info("[Recorder] insertImports()");
+            } else if (!isRecordableAction(action)) {
+                LOG.info("[Recorder] Technical command ignored: " + action.getCommand());
 
-                insertImports(editor, action);
+            } else {
+                String actionUrl = normalizePageUrl(action.getUrl());
 
-                LOG.info("[Recorder] insertElement() -> " + action.getElementName());
+                if (!isRecordablePageUrl(actionUrl)) {
+                    LOG.info("[Recorder] Action ignored for URL: " + actionUrl);
+                } else {
+                    boolean pageMustChange = currentTargetEditor == null || activePageUrl == null || !actionUrl.equals(activePageUrl);
+                    if (pageMustChange) {
+                        Editor sourceEditor = currentTargetEditor != null ? currentTargetEditor : mainEditor;
 
-                insertElement(editor, action);
+                        if (sourceEditor == null) {
+                            sourceEditor = selectedEditor;
+                        }
 
-                LOG.info("[Recorder] insertElementAction() -> " + action.getFormattedCommand().trim());
-                insertElementAction(editor, action);
+                        currentTargetEditor = insertPageObject(sourceEditor, action);
+                        activePageUrl = actionUrl;
+                        pendingPageUrl = null;
+                        pendingPageTitle = null;
 
-            } catch (IOException e) {
-                throw new RuntimeException(e);
+                        LOG.info("[Recorder] Active Page Object changed" + " url=" + activePageUrl + " targetEditor=" + getEditorFilePath(currentTargetEditor));
+                    }
+
+                    Editor targetEditor = currentTargetEditor != null ? currentTargetEditor : mainEditor;
+                    if (targetEditor == null) {
+                        targetEditor = selectedEditor;
+                    }
+
+                    currentTargetEditor = targetEditor;
+                    actionRecordedSinceLastPageLoad = true;
+
+                    LOG.info("[Recorder] command=" + action.getCommand() + " element=" + action.getElementName() + " url=" + actionUrl + " targetEditor=" + getEditorFilePath(targetEditor));
+
+                    if (action.getFramePath() != null) {
+                        LOG.info("[Recorder] framePath size=" + action.getFramePath().size());
+                    }
+
+                    insertImports(targetEditor, action);
+                    insertElement(targetEditor, action);
+                    insertElementAction(targetEditor, action);
+                }
+            }
+        } else {
+            LOG.warn("[Recorder] No Java editor selected");
+        }
+
+        response.setHeader(
+                "Access-Control-Allow-Origin",
+                "*"
+        );
+        response.setHeader(
+                "Access-Control-Allow-Methods",
+                "POST, GET, OPTIONS"
+        );
+        response.setHeader(
+                "Access-Control-Allow-Headers",
+                "Content-Type"
+        );
+        response.setStatus(
+                HttpServletResponse.SC_OK
+        );
+        response.getOutputStream().print("OK");
+        response.getOutputStream().flush();
+    }
+
+    private boolean isRecordablePageUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return false;
+        }
+
+        String normalizedUrl = url.toLowerCase();
+
+        return !normalizedUrl.startsWith("chrome://")
+                && !normalizedUrl.startsWith("chrome-extension://")
+                && !normalizedUrl.startsWith("edge://")
+                && !normalizedUrl.equals("about:blank")
+                && !normalizedUrl.startsWith("devtools://");
+    }
+
+    private boolean isRecordableAction(
+            SeleniumAction action
+    ) {
+        if (action == null || action.getCommand() == null) {
+            return false;
+        }
+
+        String command = action.getCommand();
+        String elementType = action.getElementType();
+        String value = action.getValue();
+
+        boolean typingCommand =
+                "type".equals(command)
+                        || "sendKeys".equals(command)
+                        || "keyup".equals(command)
+                        || "keydown".equals(command);
+
+        if (typingCommand
+                && (value == null || value.isEmpty())) {
+            return false;
+        }
+
+        boolean selectElement =
+                "SelectElement".equals(elementType)
+                        || "SelectList".equals(elementType);
+
+        if (selectElement
+                && ("click".equals(command)
+                || "change".equals(command))) {
+            return false;
+        }
+
+        return switch (command) {
+            case "click",
+                 "dblclick",
+                 "doubleClick",
+                 "contextmenu",
+                 "type",
+                 "sendKeys",
+                 "keyup",
+                 "keydown",
+                 "check",
+                 "uncheck",
+                 "select",
+                 "change",
+                 "removeSelection",
+                 "clickAt",
+                 "submit",
+                 "dragAndDropToObject",
+                 "verify" -> true;
+
+            default -> false;
+        };
+    }
+
+    private String normalizePageUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+
+        try {
+            URI uri = URI.create(url);
+            String path = uri.getPath();
+
+            if (path == null || path.isBlank()) {
+                path = "/";
+            }
+
+            if (path.length() > 1 && path.endsWith("/")) {
+                path = path.substring(0, path.length() - 1);
+            }
+
+            return new URI(
+                    uri.getScheme(),
+                    uri.getAuthority(),
+                    path,
+                    null,
+                    null
+            ).toString();
+
+        } catch (Exception error) {
+            LOG.warn("[Recorder] Impossible de normaliser l'URL : " + url);
+            return url;
+        }
+    }
+
+    private String getEditorFilePath(Editor editor) {
+        if (editor == null) {
+            return "null";
+        }
+
+        VirtualFile file = FileDocumentManager.getInstance().getFile(editor.getDocument());
+        return file == null ? "no-virtual-file" : file.getPath();
+    }
+
+    private int findFirstMethodStart(String text, int searchStart) {
+        java.util.regex.Pattern methodPattern =
+                java.util.regex.Pattern.compile("(?m)^\\s*" + "(public|protected|private)\\s+" + "[\\w<>,\\s\\[\\]]+\\s+" + "\\w+\\s*\\(");
+        java.util.regex.Matcher matcher = methodPattern.matcher(text);
+
+        return matcher.find(searchStart) ? matcher.start() : -1;
+    }
+
+    private void updateMainFile(
+            Editor scenarioEditor,
+            String pageMethodName,
+            int visitNumber
+    ) {
+        if (scenarioEditor == null) {
+            throw new IllegalStateException(
+                    "L'éditeur de Main.java est absent"
+            );
+        }
+
+        var document = scenarioEditor.getDocument();
+
+        String declaration = pageClassManager.buildInstanceDeclaration(pageMethodName);
+        String methodCall = pageClassManager.buildMethodCall(pageMethodName, visitNumber);
+
+        AtomicReference<Throwable> updateError =
+                new AtomicReference<>();
+
+        Runnable updateTask = () -> {
+            try {
+                WriteCommandAction.runWriteCommandAction(
+                        project, () -> {
+                            String currentSource = document.getText();
+
+                            String updatedSource = addPageToMainSource(currentSource, declaration, methodCall);
+
+                            updatedSource = StringUtil.convertLineSeparators(updatedSource, "\n");
+
+                            if (!updatedSource.equals(currentSource)) {
+                                document.setText(updatedSource);
+                            }
+
+                            LOG.info("[Recorder] Main.java updated: " + declaration + " / " + methodCall);
+                        }
+                );
+            } catch (Throwable error) {
+                updateError.set(error);
+            }
+        };
+
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            updateTask.run();
+        } else {
+            ApplicationManager.getApplication().invokeAndWait(updateTask);
+        }
+
+        if (updateError.get() != null) {
+            throw new IllegalStateException("Impossible de mettre à jour Main.java" + " avec " + declaration + " et " + methodCall,
+                    updateError.get()
+            );
+        }
+    }
+
+    private String addPageToMainSource(
+            String source,
+            String declaration,
+            String methodCall
+    ) {
+        int mainStart = source.indexOf("public static void main");
+
+        if (mainStart < 0) {
+            throw new IllegalStateException(
+                    "La méthode main() est absente"
+            );
+        }
+
+        int mainOpeningBrace = source.indexOf('{', mainStart);
+
+        if (mainOpeningBrace < 0) {
+            throw new IllegalStateException(
+                    "Le corps de main() est invalide"
+            );
+        }
+
+        int mainClosingBrace = findClosingBrace(source, mainOpeningBrace);
+
+        String mainBody = source.substring(mainOpeningBrace + 1, mainClosingBrace);
+        StringBuilder contentToInsert = new StringBuilder();
+
+        if (!mainBody.contains(declaration)) {
+            contentToInsert
+                    .append(System.lineSeparator())
+                    .append("        ")
+                    .append(declaration)
+                    .append(System.lineSeparator());
+        }
+
+        if (!mainBody.contains(methodCall)) {
+            contentToInsert
+                    .append("        ")
+                    .append(methodCall)
+                    .append(System.lineSeparator());
+        }
+
+        if (contentToInsert.isEmpty()) {
+            return source;
+        }
+
+        return source.substring(0, mainClosingBrace)
+                + contentToInsert
+                + source.substring(mainClosingBrace);
+    }
+
+    private Editor insertPageObject(
+            Editor sourceEditor,
+            SeleniumAction action
+    ) {
+        LOG.info("[Recorder] INSERT_PAGE_OBJECT CALLED");
+
+        String url = action.getUrl();
+        String pageKey = normalizePageUrl(url);
+
+        if (url == null || url.isBlank()) {
+            LOG.warn("[Recorder] URL  page abscent");
+            return sourceEditor;
+        }
+
+        Editor directoryEditor = mainEditor != null ? mainEditor : sourceEditor;
+
+        VirtualFile sourceFile = FileDocumentManager.getInstance().getFile(directoryEditor.getDocument());
+
+        if (sourceFile == null || sourceFile.getParent() == null) {
+            return sourceEditor;
+        }
+
+        VirtualFile sourceDirectory = sourceFile.getParent();
+        String pageMethodName = buildPageMethodName(url, action.getTitle());
+        String packageName = extractPackageName(directoryEditor.getDocument().getText());
+
+        int visitNumber = pageVisitCounts.merge(pageMethodName, 1, Integer::sum);
+
+        LOG.info("[Recorder] Page visit" + " url=" + url + " visitNumber=" + visitNumber);
+
+        VirtualFile pageFile = pageClassManager.createOrFindPageFile(sourceDirectory, packageName, pageMethodName);
+        if (pageFile == null) {
+            throw new IllegalStateException("Page Object non créé pour " + pageMethodName);
+        }
+
+        pageFile.refresh(false, false);
+        sourceDirectory.refresh(false, true);
+        Editor scenarioEditor = mainEditor != null ? mainEditor : sourceEditor;
+
+        LOG.info("[Recorder] Tentative de mise à jour du Main" + " editor=" + getEditorFilePath(scenarioEditor) + " page=" + pageMethodName + " visit=" + visitNumber);
+
+        try {
+            updateMainFile(scenarioEditor, pageMethodName, visitNumber);
+            LOG.info("[Recorder] Mise à jour du Main terminée" + " editor=" + getEditorFilePath(scenarioEditor));
+        } catch (RuntimeException error) {
+            LOG.error(
+                    "[Recorder] Impossible de mettre à jour Main.java" + " editor=" + getEditorFilePath(scenarioEditor)
+                            + " page=" + pageMethodName
+                            + " visit=" + visitNumber
+                            + " message=" + error.getMessage(),
+                    error
+            );
+        }
+
+        Editor pageEditor = pageClassManager.openPageEditor(pageFile, visitNumber);
+
+        if (pageEditor == null) {
+            throw new IllegalStateException("Impossible d'ouvrir " + pageFile.getPath());
+        }
+
+        return pageEditor;
+
+
+    }
+
+    private int findClosingBrace(String text, int openingBrace) {
+        int depth = 0;
+
+        for (int index = openingBrace;
+             index < text.length();
+             index++) {
+
+            char character = text.charAt(index);
+
+            if (character == '{') {
+                depth++;
+            } else if (character == '}') {
+                depth--;
+
+                if (depth == 0) {
+                    return index;
+                }
             }
         }
 
-        response.setHeader("Access-Control-Allow-Origin", "*");
-        response.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-        response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-        response.setStatus(200);
-        try {
-            response.getOutputStream().print("OK");
-            response.getOutputStream().flush();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        throw new IllegalStateException(
+                "L'accolade fermante de main() est absente"
+        );
+    }
+
+    private String extractPackageName(String javaCode) {
+        if (javaCode == null || javaCode.isBlank()) {
+            return "";
         }
+
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?m)^\\s*package\\s+([^;]+);")
+                .matcher(javaCode);
+
+        return matcher.find() ? matcher.group(1).trim() : "";
+    }
+
+    private String buildPageMethodName(String url, String title) {
+        String source = "";
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String fragment = uri.getFragment();
+            if (fragment != null && !fragment.isBlank()) {
+                source = fragment;
+            } else {
+                String path = uri.getPath();
+                if (path != null && !path.isBlank() && !"/".equals(path)) {
+                    String[] pathParts = path.split("/");
+                    for (int index = pathParts.length - 1; index >= 0; index--) {
+                        if (pathParts[index] != null && !pathParts[index].isBlank()
+                        ) {
+                            source = pathParts[index];
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (
+                IllegalArgumentException error
+        ) {
+            LOG.warn("[Recorder] Invalid page URL: " + url);
+        }
+
+        if (
+                source == null || source.isBlank()) {
+            source = title;
+        }
+
+        if (source == null || source.isBlank()) {
+            source = "newPage";
+        }
+
+        source = source.replaceFirst("\\.[A-Za-z0-9]+$", "");
+
+        String[] words = source.split("[^A-Za-z0-9]+");
+
+        StringBuilder methodName = new StringBuilder();
+
+        for (String word : words) {
+            if (word == null || word.isBlank()) {
+                continue;
+            }
+
+            if (methodName.isEmpty()) {
+                methodName.append(word.substring(0, 1).toLowerCase());
+
+                if (word.length() > 1) {
+                    methodName.append(word.substring(1));
+                }
+            } else {
+                methodName.append(word.substring(0, 1).toUpperCase());
+
+                if (word.length() > 1) {
+                    methodName.append(word.substring(1));
+                }
+            }
+        }
+
+        if (methodName.isEmpty()) {
+            methodName.append("newPage");
+        }
+
+        if (Character.isDigit(methodName.charAt(0))) {
+            methodName.insert(0, "page");
+        }
+
+        if (!methodName.toString().endsWith("Page")
+        ) {
+            methodName.append("Page");
+        }
+
+        return methodName.toString();
     }
 
     private String insertElement(Editor editor, SeleniumAction seleniumAction) {
@@ -108,7 +599,7 @@ public class SeleniumServlet extends HttpServlet {
                         seleniumAction.getFramePath();
 
                 /*
-                 * Déclaration of each iframe in order :
+                 * Declaration of each iframe in order :
                  *
                  * document principal
                  * -> iframeA
@@ -127,27 +618,15 @@ public class SeleniumServlet extends HttpServlet {
                     String selector = currentFrame.getSelector();
 
                     if (
-                            selector == null
-                                    || selector.trim().isEmpty()
-                                    || "null".equals(
-                                    selector.trim()
+                            selector == null || selector.trim().isEmpty() || "null".equals(selector.trim()
                             )
                     ) {
                         if (
-                                currentFrame.getId() != null
-                                        && !currentFrame
-                                        .getId()
-                                        .isBlank()
+                                currentFrame.getId() != null && !currentFrame.getId().isBlank()
                         ) {
-                            selector =
-                                    "By.id(\""
-                                            + currentFrame
-                                            .getId()
-                                            .trim()
-                                            + "\")";
+                            selector = "By.id(\"" + currentFrame.getId().trim() + "\")";
                         } else {
-                            selector =
-                                    "By.cssSelector(\"iframe\")";
+                            selector = "By.cssSelector(\"iframe\")";
                         }
                     }
 
@@ -172,11 +651,7 @@ public class SeleniumServlet extends HttpServlet {
 
                     if (!containsExactFrameDecl(text, frameVarName)) {
                         int insertPos = framesBlockEnd != -1 ? framesBlockEnd : classBodyStart;
-                        doc.insertString(
-                                insertPos,
-                                frameDecl
-                        );
-
+                        doc.insertString(insertPos, frameDecl);
 
                         text = doc.getText();
 
@@ -258,8 +733,14 @@ public class SeleniumServlet extends HttpServlet {
                         java.util.regex.Matcher.quoteReplacement(resolvedElementName));
             }
             if (!containsExactElementDecl(text, elementType, resolvedElementName)) {
-                int insertPos = (framesBlockEnd != -1) ? framesBlockEnd : classBodyStart;
-                elementCode = elementCode.replaceFirst("^\\n+", ""); // pas de \n en tête
+                text = doc.getText();
+                int insertPos = findFirstMethodStart(text, classBodyStart);
+
+                if (insertPos < 0) {
+                    insertPos = text.lastIndexOf('}');
+                }
+
+                elementCode = elementCode.replaceFirst("^\\n+", "");
                 doc.insertString(insertPos, elementCode);
                 text = doc.getText();
             }
@@ -308,13 +789,7 @@ public class SeleniumServlet extends HttpServlet {
             return false;
         }
 
-        String pattern =
-                "(?m)^\\s*private\\s+static\\s+"
-                        + "\\w+\\s+"
-                        + java.util.regex.Pattern.quote(
-                        elementName
-                )
-                        + "\\s*=";
+        String pattern = "(?m)^\\s*private\\s+static\\s+" + "\\w+\\s+" + java.util.regex.Pattern.quote(elementName) + "\\s*=";
 
         return java.util.regex.Pattern
                 .compile(pattern)
@@ -334,22 +809,6 @@ public class SeleniumServlet extends HttpServlet {
     }
 
 
-    private String buildFrameId(FrameInfo fr) {
-        String id = fr.getId();
-        if (id != null && !id.isBlank()) {
-            return id;
-        }
-        String sel = String.valueOf(fr.getSelector());
-        String hash = Integer.toHexString(sel.hashCode());
-        return "frame_" + hash;
-    }
-
-    private String buildFrameVarName(FrameInfo fr) {
-        String frameId = buildFrameId(fr);
-        String sanitized = frameId.replaceAll("[^A-Za-z0-9_]", "_");
-        return "frame_" + sanitized;
-    }
-
     private boolean isStrongSelector(String selector) {
         if (selector == null) return false;
         return selector.startsWith("By.id(")
@@ -357,7 +816,7 @@ public class SeleniumServlet extends HttpServlet {
                 || selector.startsWith("By.linkText(")
                 || selector.contains("[data-testid=")
                 || selector.contains("[aria-label=")
-                || selector.contains("href="); // a[href="..."]
+                || selector.contains("href=");
     }
 
 
@@ -370,17 +829,12 @@ public class SeleniumServlet extends HttpServlet {
         if (isSelect && ("click".equals(cmd) || "change".equals(cmd))) {
             return;
         }
-
-        boolean isTypingCmd =
-                "type".equals(cmd) ||
-                        "sendKeys".equals(cmd) ||
-                        "keyup".equals(cmd) ||
-                        "keydown".equals(cmd);
-
+        boolean isTypingCmd = "type".equals(cmd) || "sendKeys".equals(cmd) || "keyup".equals(cmd) || "keydown".equals(cmd);
         if (isTypingCmd && (seleniumAction.getValue() == null || seleniumAction.getValue().isEmpty())) {
             return;
         }
 
+    private void insertImports(Editor editor, SeleniumAction seleniumAction) {
         WriteCommandAction.runWriteCommandAction(project, () -> {
 
             var doc = editor.getDocument();
@@ -412,7 +866,7 @@ public class SeleniumServlet extends HttpServlet {
             String elementNameUsed = initialVar;
             if (declaredName != null && !declaredName.equals(initialVar)) {
                 code = code.replace(initialVar + ".", declaredName + ".");
-                elementNameUsed = declaredName;   // ← IMPORTANT
+                elementNameUsed = declaredName;
             }
 
 
@@ -472,10 +926,6 @@ public class SeleniumServlet extends HttpServlet {
         return line.isEmpty() ? null : line;
     }
 
-    /**
-     * Retourne {start, end} (end exclusif) de la dernière ligne contenant
-     * elementName.sendKeys(...) ou elementName.setText(...) avant caretOffset.
-     */
     private int[] findLastTypingCallRange(String text, int caretOffset, String elementName) {
         String p1 = elementName + ".sendKeys(";
         String p2 = elementName + ".setText(";
@@ -558,98 +1008,11 @@ public class SeleniumServlet extends HttpServlet {
         });
     }
 
-
-    // ---- Helpers de mise en forme des champs (déclarations) ----
-
-    /**
-     * Remplace les séquences de \n\n\n+ par au plus une ligne vide (\n\n)
-     * dans la zone des champs entre l’accolade ouvrante de classe et le début du premier method body.
-     */
-    private String compactBlankLinesInFieldZone(String text) {
-        int classOpen = text.indexOf('{');
-        if (classOpen < 0) return text;
-        int zoneStart = indexAfterLineEnd(text, classOpen);
-
-
-        java.util.regex.Pattern methodStartPat = java.util.regex.Pattern.compile(
-                "(?m)^\\s*(public|protected|private)\\s+[\\w<>,\\s\\[\\]]+\\s+\\w+\\s*\\("
-        );
-        java.util.regex.Matcher mm = methodStartPat.matcher(text);
-        int zoneEnd = mm.find(zoneStart) ? mm.start() : text.lastIndexOf('}'); // sinon jusqu'à la fin
-
-        if (zoneEnd <= zoneStart) zoneEnd = text.length();
-
-        String before = text.substring(0, zoneStart);
-        String zone = text.substring(zoneStart, zoneEnd);
-        String after = text.substring(zoneEnd);
-
-
-        zone = zone.replaceAll("(?m)\\n{3,}", "\n\n");
-
-
-        zone = zone.replaceAll(
-                "(?m)(^\\s*private\\s+static[\\s\\S]*?;)[ \\t]*\\n\\n(?=\\s*private\\s+static\\s)",
-                "$1\n"
-        );
-
-        return before + zone + after;
-    }
-
-    /**
-     * Garantit qu’il y a exactement UNE ligne vide entre le dernier FrameElement
-     * et la première déclaration non-frame (si des frames existent).
-     */
-    private String ensureSingleBlankAfterFrames(String text) {
-        int classOpen = text.indexOf('{');
-        if (classOpen < 0) return text;
-        int zoneStart = indexAfterLineEnd(text, classOpen);
-
-
-        java.util.regex.Pattern frameLine = java.util.regex.Pattern.compile(
-                "(?m)^\\s*private\\s+static\\s+FrameElement\\s+\\w+\\s*=\\s*new\\s+FrameElement\\s*\\([^;]*\\);\\s*$"
-        );
-        java.util.regex.Matcher m = frameLine.matcher(text);
-        int lastFrameEnd = -1;
-        while (m.find(zoneStart)) {
-            int lineEnd = text.indexOf('\n', m.end());
-            lastFrameEnd = (lineEnd == -1) ? text.length() : lineEnd;
-        }
-        if (lastFrameEnd == -1) {
-            return text; // pas de frames
-        }
-
-        int pos = lastFrameEnd;
-        int runStart = pos;
-        int runEnd = pos;
-
-        while (runEnd < text.length() && text.charAt(runEnd) == '\n') runEnd++;
-
-
-        String after = text.substring(runEnd);
-        if (after.startsWith("\n")) {
-            // 2+ vides -> réduire à 1
-            text = text.substring(0, runStart) + "\n\n" + after.replaceFirst("^\\n+", "");
-        } else if (!after.isEmpty() && after.charAt(0) != '\n') {
-            // pas de blanc -> en ajouter 1
-            text = text.substring(0, runStart) + "\n\n" + after;
-        }
-        return text;
-    }
-
-    /**
-     * Renvoie l'index juste après la fin de ligne qui contient 'pos'
-     */
     private int indexAfterLineEnd(String text, int pos) {
         int nl = text.indexOf('\n', pos);
         return nl >= 0 ? nl + 1 : pos + 1;
     }
 
-    /**
-     * Compacte la zone des champs (entre '{' de la classe et la première méthode):
-     * - Réduit tout excès de lignes vides.
-     * - Force exactement UNE ligne vide après le dernier FrameElement.
-     * - Force ZERO ligne vide entre deux déclarations non-frame.
-     */
     private String reformatFieldZone(String text) {
         int classOpen = text.indexOf('{');
         if (classOpen < 0) return text;
@@ -691,14 +1054,12 @@ public class SeleniumServlet extends HttpServlet {
             }
         }
 
-        boolean afterLastFrameBlankEmitted = !seenAnyFrame; // si pas de frame, pas de blanc spécial
+        boolean afterLastFrameBlankEmitted = !seenAnyFrame;
         for (int i = 0; i < lines.length; i++) {
             String raw = lines[i];
-            String cur = raw; // ligne telle quelle (sans trim global)
+            String cur = raw;
 
             boolean isEmpty = cur.trim().isEmpty();
-            boolean isFrameDecl = frameLine.matcher(cur).find();
-            boolean isFieldDecl = fieldLine.matcher(cur).find();
 
 
             if (seenAnyFrame && i > lastFrameLineIndex) {
@@ -745,9 +1106,6 @@ public class SeleniumServlet extends HttpServlet {
         return before + zoned + after;
     }
 
-    /**
-     * Renvoie la dernière ligne non vide déjà écrite dans le StringBuilder (ou null)
-     */
     private String lastNonEmptyLine(StringBuilder sb) {
         String s = sb.toString();
         int i = s.length() - 1;
@@ -759,9 +1117,6 @@ public class SeleniumServlet extends HttpServlet {
         return line.trim().isEmpty() ? null : line;
     }
 
-    /**
-     * Renvoie la prochaine ligne non vide à partir d'un index dans un tableau de lignes (ou null)
-     */
     private String nextNonEmpty(String[] lines, int from) {
         for (int i = from; i < lines.length; i++) {
             if (!lines[i].trim().isEmpty()) return lines[i];
@@ -769,9 +1124,6 @@ public class SeleniumServlet extends HttpServlet {
         return null;
     }
 
-    /**
-     * Id logique de la frame: si ID fourni, on l'utilise; sinon hash du selector. (sans préfixe "frame_")
-     */
     private String computeFrameLogicalId(FrameInfo fr) {
         String id = fr.getId();
         if (id != null && !id.isBlank()) {
@@ -781,22 +1133,13 @@ public class SeleniumServlet extends HttpServlet {
         return Integer.toHexString(sel.hashCode());
     }
 
-    /**
-     * Nom de variable Java: "frame_" + logicalId (sanitizé), sans double préfixe
-     */
     private String computeFrameVarName(FrameInfo fr) {
         String logicalId = computeFrameLogicalId(fr);
         String sanitized = logicalId.replaceAll("[^A-Za-z0-9_]", "_");
         return "frame_" + sanitized;
     }
 
-    /**
-     * Cherche une déclaration de champ existante par SELECTOR (texte "By.id(...)" exact) et Frame (optionnelle)
-     * Renvoie {start, end, elementType, elementName} ou null si pas trouvé.
-     */
     private Object[] findFieldDeclBySelector(String text, String selectorLiteral, String frameVarOrNull) {
-        // pattern: private static <Type> <name> = new <Type>("...", <selector>[, frameVar]?);
-        // on capture le type, le nom, le selecteur et (optionnellement) la frame
         String selEsc = java.util.regex.Pattern.quote(selectorLiteral.trim());
         String framePart = (frameVarOrNull == null || frameVarOrNull.isBlank())
                 ? "(?:\\s*,\\s*\\w+)?"
