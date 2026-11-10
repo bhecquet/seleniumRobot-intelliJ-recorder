@@ -834,6 +834,7 @@ public class SeleniumServlet extends HttpServlet {
             return;
         }
 
+    private void insertImports(Editor editor, SeleniumAction seleniumAction) {
         WriteCommandAction.runWriteCommandAction(project, () -> {
 
             var doc = editor.getDocument();
