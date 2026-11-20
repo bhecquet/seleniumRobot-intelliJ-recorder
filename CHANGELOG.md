@@ -2,4 +2,6 @@
 
 # IntelliJ Platform Plugin Template Changelog
 
-## [Unreleased]
+## [1.0.2]
+
+- Update extension

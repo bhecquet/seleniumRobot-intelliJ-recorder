@@ -140,6 +140,28 @@ chrome://extensions
 
 For the illustrated installation procedure, see the internal Confluence documentation.
 
+### Update the Bundled Extension
+
+The extension embedded in the plugin is `src/main/resources/recorder1.zip`. It comes from
+[seleniumRobot-chrome-extension](https://github.com/bhecquet/seleniumRobot-chrome-extension).
+
+To refresh it, run (requires `git`, `npm` and Python 3 in the `PATH`):
+
+```powershell
+python scripts/update_chrome_extension.py
+```
+
+The script clones the repository, runs `npm install` to embed the node dependencies, then zips the result (without
+`.git`) under a top-level `recorder1/` folder.
+
+Options:
+
+- `--ref <branch-or-tag>`: package a specific branch or tag instead of the default branch.
+- `--repo <url>`: use another repository or fork.
+- `--output <file>`: write the zip elsewhere.
+
+Commit the updated `recorder1.zip` afterwards.
+
 ---
 
 ## Running the Recorder
