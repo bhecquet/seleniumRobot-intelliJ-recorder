@@ -3,6 +3,7 @@ import org.jetbrains.changelog.markdownToHTML
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
+    id("com.gradleup.shadow") version "9.6.1"
     id("java") // Java support
     id("org.jetbrains.intellij.platform") version "2.20.1"
     alias(libs.plugins.kotlin) // Kotlin support
@@ -140,6 +141,7 @@ tasks {
         dependsOn(patchChangelog)
     }
 }
+
 
 intellijPlatformTesting {
     runIde {

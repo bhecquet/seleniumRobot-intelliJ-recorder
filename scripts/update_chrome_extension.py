@@ -70,7 +70,6 @@ def main():
         if args.ref:
             clone += ["--branch", args.ref]
         run(clone + [args.repo, str(source)])
-        run([npm, "install"], cwd=source)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         build_zip(source, args.output)
         print(f"Updated {args.output}")

@@ -108,8 +108,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: build/libs/SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
-          asset_name: SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
+          asset_path: build/libs/SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}-all.jar
+          asset_name: SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}-all.jar
           asset_content_type: application/gzip
 
       - name: Commit next version
