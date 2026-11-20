@@ -833,8 +833,8 @@ public class SeleniumServlet extends HttpServlet {
         if (isTypingCmd && (seleniumAction.getValue() == null || seleniumAction.getValue().isEmpty())) {
             return;
         }
+    
 
-    private void insertImports(Editor editor, SeleniumAction seleniumAction) {
         WriteCommandAction.runWriteCommandAction(project, () -> {
 
             var doc = editor.getDocument();

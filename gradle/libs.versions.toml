@@ -7,7 +7,7 @@ cdt = "5.0.0"
 
 # plugins
 changelog = "2.2.1"
-intelliJPlatform = "2.0.1"
+intelliJPlatform = "2.20.1"
 kotlin = "1.9.25"
 kover = "0.8.3"
 qodana = "2024.1.9"
@@ -16,8 +16,8 @@ qodana = "2024.1.9"
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 jettyServer = { group = "org.eclipse.jetty", name = "jetty-server", version.ref = "jettyServer" }
 jettyServlet = { group = "org.eclipse.jetty", name = "jetty-servlet", version.ref = "jettyServer" }
-jnaPlatform = { group = "net.java.dev.jna", name = "jna-platform", version.ref = "jna"}
-cdt = { group = "io.github.sskorol", name = "cdt-java-client", version.ref = "cdt"}
+jnaPlatform = { group = "net.java.dev.jna", name = "jna-platform", version.ref = "jna" }
+cdt = { group = "io.github.sskorol", name = "cdt-java-client", version.ref = "cdt" }
 
 [plugins]
 changelog = { id = "org.jetbrains.changelog", version.ref = "changelog" }
