@@ -2,72 +2,121 @@
 # They are provided by a third-party and are governed by
 # separate terms of service, privacy policy, and support
 # documentation.
-# This workflow will build a package using Gradle and then publish it to GitHub packages when a release is created
+# This workflow builds a package and publishes it as a GitHub release.
 # For more information see: https://github.com/actions/setup-java/blob/main/docs/advanced-usage.md#Publishing-using-gradle
 
 name: Gradle Package
 
-on: 
+on:
   workflow_dispatch:
+
+concurrency:
+  group: gradle-publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
 
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up JDK 17
-      uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        server-id: github # Value of the distributionManagement/repository/id field of the pom.xml
-        settings-path: ${{ github.workspace }} # location for the settings.xml file
+      - name: Require a branch
+        if: github.ref_type != 'branch'
+        run: |
+          echo "::error::This workflow must be run on a branch to commit the next version."
+          exit 1
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v6
-      with:
-        gradle-version: current
+      - uses: actions/checkout@v4
+      - name: Check branch is up to date
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$BRANCH" | cut -f1)"
+          if [[ "$remote_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::The branch has changed since this workflow was started. Run it again."
+            exit 1
+          fi
 
-    - name: Build with Gradle
-      run: bash ./gradlew build
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          server-id: github # Value of the distributionManagement/repository/id field of the pom.xml
+          settings-path: ${{ github.workspace }} # location for the settings.xml file
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: current
+
+      - name: Build with Gradle
+        run: bash ./gradlew build
       
-#    - name: Upload build artifacts
-#      uses: actions/upload-artifact@v4
-#      with:
-#        name: Package
-#        path: build/libs
+      #    - name: Upload build artifacts
+      #      uses: actions/upload-artifact@v4
+      #      with:
+      #        name: Package
+      #        path: build/libs
 
-    - uses: sardul3/gradle-version-incrementer@1.0.2
-      id: update_version
-      with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        file-path: 'gradle.properties'
-        increment-type: 'patch'
-        mode: 'update-file'
+      - name: Increment patch version
+        id: update_version
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
 
-    - name: release
-      uses: actions/create-release@v1
-      id: create_release
-      with:
-        draft: false
-        prerelease: false
-        release_name: ${{ steps.update_version.outputs.previous-version }}
-        tag_name: ${{ github.ref }}
-        body_path: CHANGELOG.md
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-    - name: upload linux artifact
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: build/libs/SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
-        asset_name: SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
-        asset_content_type: application/gzip
+          path = Path("gradle.properties")
+          lines = path.read_bytes().splitlines(keepends=True)
+          property_pattern = re.compile(rb"^([ \t]*version[ \t]*=[ \t]*)([^\r\n]*?)([ \t]*)(\r?\n)?$")
+          matches = [(index, match) for index, line in enumerate(lines) if (match := property_pattern.fullmatch(line))]
+          if len(matches) != 1:
+              raise SystemExit("Expected exactly one version property in gradle.properties")
 
+          index, match = matches[0]
+          previous = match.group(2).decode("ascii")
+          version = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)((?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)", previous)
+          if not version:
+              raise SystemExit(f"Unsupported version: {previous}")
+          new = f"{version[1]}.{version[2]}.{int(version[3]) + 1}{version[4]}"
+          lines[index] = match.group(1) + new.encode("ascii") + match.group(3) + (match.group(4) or b"")
+          path.write_bytes(b"".join(lines))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"previous-version={previous}\nnew-version={new}\n")
+          print(f"Version: {previous} -> {new}")
+          PY
+
+      - name: release
+        uses: actions/create-release@v1
+        id: create_release
+        with:
+          draft: false
+          prerelease: false
+          release_name: ${{ steps.update_version.outputs.previous-version }}
+          tag_name: v${{ steps.update_version.outputs.previous-version }}
+          commitish: ${{ github.sha }}
+          body_path: CHANGELOG.md
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: upload linux artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: build/libs/SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
+          asset_name: SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
+          asset_content_type: application/gzip
+
+      - name: Commit next version
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          branch: ${{ github.ref_name }}
+          file_pattern: gradle.properties
+          commit_message: Bump plugin version to ${{ steps.update_version.outputs.new-version }}
+          skip_fetch: true
+          skip_checkout: true
