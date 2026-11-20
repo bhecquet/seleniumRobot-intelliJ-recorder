@@ -35,9 +35,39 @@ jobs:
 
     - name: Build with Gradle
       run: bash ./gradlew build
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
+      
+#    - name: Upload build artifacts
+#      uses: actions/upload-artifact@v4
+#      with:
+#        name: Package
+#        path: build/libs
+
+    - uses: sardul3/gradle-version-incrementer@1.0.2
+      id: update_version
       with:
-        name: Package
-        path: build/libs
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        file-path: 'gradle.properties'
+        increment-type: 'patch'
+        mode: 'update-file'
+
+    - name: release
+      uses: actions/create-release@v1
+      id: create_release
+      with:
+        draft: false
+        prerelease: false
+        release_name: ${{ steps.update_version.outputs.previous-version }}
+        tag_name: ${{ github.ref }}
+        body_path: CHANGELOG.md
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+    - name: upload linux artifact
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: build/libs/SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
+        asset_name: SeleniumRobot recorder plugin-${{ steps.update_version.outputs.previous-version }}.jar
+        asset_content_type: application/gzip
 
