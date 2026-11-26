@@ -163,7 +163,7 @@ public class SeleniumActionTest {
                 List.of("xpath", "//span[normalize-space(.)='ExactTextTarget']")
         ));
 
-        assertEquals("ByC.text(\"ExactTextTarget\", \"span\")", action.getSelector());
+        assertEquals("ByC.text(\"ExactTextTarget\", \"span\", true)", action.getSelector());
     }
 
     @Test

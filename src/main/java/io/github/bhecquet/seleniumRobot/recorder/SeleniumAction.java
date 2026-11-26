@@ -419,7 +419,7 @@ public class SeleniumAction {
                         + escape(uniqueText)
                         + "\", \""
                         + escape(textTagName)
-                        + "\")";
+                        + "\", true)";
             case "formControlName":
             case "formcontrolname":
                 return "ByC.attribute(\"formcontrolname\", \""
@@ -484,7 +484,7 @@ public class SeleniumAction {
                     return null;
                 }
 
-                return "ByC.text(\"" + escape(uniqueButtonText) + "\", \"button\")";
+                return "ByC.text(\"" + escape(uniqueButtonText) + "\", \"button\", true)";
 
             case "uniqueLinkText":
                 String uniqueLinkText = cleanText(raw);
@@ -582,7 +582,7 @@ public class SeleniumAction {
                                 + escape(text)
                                 + "\", \""
                                 + escape(fallbackTagName)
-                                + "\")";
+                                + "\", true)";
                     }
 
                     return "By.xpath(\"" + escape(raw.startsWith("xpath=") ? raw.substring(6) : raw) + "\")";

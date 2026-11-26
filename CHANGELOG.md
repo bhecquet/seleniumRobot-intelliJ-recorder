@@ -5,3 +5,7 @@
 ## [1.0.2]
 
 - Update extension
+
+## [1.0.3]
+
+- ByC.text takes a third argument
